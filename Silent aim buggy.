@@ -1,0 +1,344 @@
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local isMobile = UserInputService.TouchEnabled
+
+-- ПРОСТОЙ ПОВОРОТ КАМЕРЫ
+local function RotateCameraTo(targetPart)
+    if not targetPart then return false end
+    
+    local camera = workspace.CurrentCamera
+    local startCFrame = camera.CFrame
+    local direction = (targetPart.Position - camera.CFrame.Position).Unit
+    local targetCFrame = CFrame.new(camera.CFrame.Position, camera.CFrame.Position + direction)
+    
+    -- Быстрый поворот
+    local startTime = tick()
+    while tick() - startTime < 0.02 do
+        camera.CFrame = startCFrame:Lerp(targetCFrame, (tick() - startTime) / 0.02)
+        RunService.RenderStepped:Wait()
+    end
+    
+    -- Возврат
+    startTime = tick()
+    while tick() - startTime < 0.02 do
+        camera.CFrame = targetCFrame:Lerp(startCFrame, (tick() - startTime) / 0.02)
+        RunService.RenderStepped:Wait()
+    end
+    
+    return true
+end
+
+-- НАСТРОЙКИ
+local Settings = {
+    Enabled = true,
+    FOV = 80,
+    FOVColor = Color3.fromRGB(180, 80, 220),
+    ShowFOV = true,
+    TargetPart = "Head",
+    HitChance = 100
+}
+
+-- FOV КРУГ 80 (ПРОСТОЙ)
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "SilentAimGUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = game.CoreGui
+
+local CircleFrame = Instance.new("Frame")
+CircleFrame.Name = "FOVCircle"
+CircleFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+CircleFrame.BackgroundTransparency = 1
+CircleFrame.Size = UDim2.new(0, Settings.FOV * 2, 0, Settings.FOV * 2)
+CircleFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+CircleFrame.Visible = Settings.ShowFOV and Settings.Enabled
+CircleFrame.ZIndex = 999
+CircleFrame.Parent = ScreenGui
+
+local UIStroke = Instance.new("UIStroke")
+UIStroke.Color = Settings.FOVColor
+UIStroke.Thickness = 2
+UIStroke.Transparency = 0.3
+UIStroke.Parent = CircleFrame
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(1, 0)
+UICorner.Parent = CircleFrame
+
+-- ПОИСК ЧАСТИ ТЕЛА
+local function FindBodyPart(character, partName)
+    if not character then return nil end
+    if character:FindFirstChild("Head") then return character.Head end
+    if character:FindFirstChild("HumanoidRootPart") then return character.HumanoidRootPart end
+    return character.PrimaryPart
+end
+
+-- ПОИСК ЦЕЛИ В FOV
+local function FindTargetInFOV()
+    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local closestPlayer = nil
+    local closestPart = nil
+    local closestDistance = math.huge
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        
+        local character = player.Character
+        if not character then continue end
+        
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then continue end
+        
+        local targetPart = FindBodyPart(character, Settings.TargetPart)
+        if not targetPart then continue end
+        
+        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+        if not onScreen then continue end
+        
+        local targetPoint = Vector2.new(screenPos.X, screenPos.Y)
+        local distance = (targetPoint - center).Magnitude
+        
+        if distance <= Settings.FOV and distance < closestDistance then
+            closestDistance = distance
+            closestPlayer = player
+            closestPart = targetPart
+        end
+    end
+    
+    return closestPlayer, closestPart
+end
+
+-- ПОИСК КНОПКИ СТРЕЛЬБЫ ДЛЯ ТЕЛЕФОНА
+local function FindShootButton()
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+    local foundButtons = {}
+    
+    -- Ищем ВСЕ кнопки в PlayerGui
+    for _, gui in pairs(playerGui:GetDescendants()) do
+        if gui:IsA("TextButton") or gui:IsA("ImageButton") then
+            table.insert(foundButtons, gui)
+        end
+    end
+    
+    -- Ищем в StarterGui
+    local starterGui = game:GetService("StarterGui")
+    for _, gui in pairs(starterGui:GetDescendants()) do
+        if gui:IsA("TextButton") or gui:IsA("ImageButton") then
+            table.insert(foundButtons, gui)
+        end
+    end
+    
+    -- Ищем в CoreGui
+    for _, gui in pairs(game.CoreGui:GetDescendants()) do
+        if gui:IsA("TextButton") or gui:IsA("ImageButton") then
+            table.insert(foundButtons, gui)
+        end
+    end
+    
+    return foundButtons
+end
+
+-- ХУК ВСЕХ НАЙДЕННЫХ КНОПОК
+local function HookAllButtons()
+    local buttons = FindShootButton()
+    
+    for _, button in pairs(buttons) do
+        local success, result = pcall(function()
+            local oldActivate = button.Activated
+            
+            button.Activated = function(...)
+                if Settings.Enabled and math.random(1,100) <= Settings.HitChance then
+                    local _, targetPart = FindTargetInFOV()
+                    if targetPart then
+                        RotateCameraTo(targetPart)
+                    end
+                end
+                return oldActivate(...)
+            end
+            
+            return true
+        end)
+        
+        if success then
+            print("[ХУК] Кнопка захвачена:", button.Name)
+        end
+    end
+end
+
+-- ХУК ДЛЯ ТАПА ПО ЭКРАНУ (мобильная стрельба)
+local function HookTouchShoot()
+    if not isMobile then return end
+    
+    UserInputService.TouchStarted:Connect(function(touch, processed)
+        if processed then return end
+        if not Settings.Enabled then return end
+        if math.random(1,100) > Settings.HitChance then return end
+        
+        -- Ждем немного чтобы игра обработала тап
+        task.wait(0.01)
+        
+        local _, targetPart = FindTargetInFOV()
+        if targetPart then
+            RotateCameraTo(targetPart)
+        end
+    end)
+end
+
+-- ХУК ДЛЯ ИНСТРУМЕНТОВ
+local function HookTools()
+    local character = LocalPlayer.Character
+    if not character then return end
+    
+    for _, tool in pairs(character:GetChildren()) do
+        if tool:IsA("Tool") then
+            for _, remote in pairs(tool:GetDescendants()) do
+                if remote:IsA("RemoteEvent") then
+                    local success, result = pcall(function()
+                        local oldFire = remote.FireServer
+                        
+                        remote.FireServer = function(self, ...)
+                            if Settings.Enabled and math.random(1,100) <= Settings.HitChance then
+                                local _, targetPart = FindTargetInFOV()
+                                if targetPart then
+                                    RotateCameraTo(targetPart)
+                                end
+                            end
+                            return oldFire(self, ...)
+                        end
+                    end)
+                    
+                    if success then
+                        print("[ХУК] Оружие захвачено:", tool.Name)
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- КНОПКА ВКЛЮЧЕНИЯ
+local ToggleButton = Instance.new("TextButton")
+ToggleButton.Name = "SilentToggle"
+ToggleButton.Size = UDim2.new(0, 150, 0, 40)
+ToggleButton.Position = UDim2.new(1, -160, 0, 10)
+ToggleButton.AnchorPoint = Vector2.new(1, 0)
+ToggleButton.BackgroundColor3 = Color3.fromRGB(180, 80, 220)
+ToggleButton.BackgroundTransparency = 0.3
+ToggleButton.Text = "SILENT: ON"
+ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleButton.Font = Enum.Font.GothamBold
+ToggleButton.TextSize = 14
+ToggleButton.ZIndex = 1000
+ToggleButton.Parent = ScreenGui
+
+local UICorner2 = Instance.new("UICorner")
+UICorner2.CornerRadius = UDim.new(0, 8)
+UICorner2.Parent = ToggleButton
+
+ToggleButton.MouseButton1Click:Connect(function()
+    Settings.Enabled = not Settings.Enabled
+    ToggleButton.Text = Settings.Enabled and "SILENT: ON" or "SILENT: OFF"
+    ToggleButton.BackgroundColor3 = Settings.Enabled and Color3.fromRGB(180, 80, 220) or Color3.fromRGB(80, 60, 100)
+    CircleFrame.Visible = Settings.Enabled and Settings.ShowFOV
+end)
+
+-- КНОПКА ТЕСТА
+local TestButton = Instance.new("TextButton")
+TestButton.Name = "TestShoot"
+TestButton.Size = UDim2.new(0, 150, 0, 40)
+TestButton.Position = UDim2.new(1, -160, 0, 60)
+TestButton.AnchorPoint = Vector2.new(1, 0)
+TestButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+TestButton.BackgroundTransparency = 0.3
+TestButton.Text = "ТЕСТ ПОВОРОТА"
+TestButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+TestButton.Font = Enum.Font.GothamBold
+TestButton.TextSize = 14
+TestButton.ZIndex = 1000
+TestButton.Parent = ScreenGui
+
+local UICorner3 = Instance.new("UICorner")
+UICorner3.CornerRadius = UDim.new(0, 8)
+UICorner3.Parent = TestButton
+
+TestButton.MouseButton1Click:Connect(function()
+    if Settings.Enabled then
+        local _, targetPart = FindTargetInFOV()
+        if targetPart then
+            local success = RotateCameraTo(targetPart)
+            TestButton.Text = success and "РАБОТАЕТ!" or "ОШИБКА"
+            task.wait(0.5)
+            TestButton.Text = "ТЕСТ ПОВОРОТА"
+        else
+            TestButton.Text = "НЕТ ЦЕЛИ"
+            task.wait(0.5)
+            TestButton.Text = "ТЕСТ ПОВОРОТА"
+        end
+    end
+end)
+
+-- КНОПКА ПОИСКА КНОПОК
+local FindButton = Instance.new("TextButton")
+FindButton.Name = "FindShootButton"
+FindButton.Size = UDim2.new(0, 150, 0, 40)
+FindButton.Position = UDim2.new(1, -160, 0, 110)
+FindButton.AnchorPoint = Vector2.new(1, 0)
+FindButton.BackgroundColor3 = Color3.fromRGB(50, 150, 255)
+FindButton.BackgroundTransparency = 0.3
+FindButton.Text = "НАЙТИ КНОПКИ"
+FindButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+FindButton.Font = Enum.Font.GothamBold
+FindButton.TextSize = 14
+FindButton.ZIndex = 1000
+FindButton.Parent = ScreenGui
+
+local UICorner4 = Instance.new("UICorner")
+UICorner4.CornerRadius = UDim.new(0, 8)
+UICorner4.Parent = FindButton
+
+FindButton.MouseButton1Click:Connect(function()
+    local buttons = FindShootButton()
+    print("[ПОИСК] Найдено кнопок:", #buttons)
+    
+    for _, button in pairs(buttons) do
+        print(" - " .. button.Name .. " (" .. button.ClassName .. ")")
+    end
+    
+    HookAllButtons()
+    HookTools()
+    
+    FindButton.Text = "НАЙДЕНО: " .. #buttons
+    task.wait(1)
+    FindButton.Text = "НАЙТИ КНОПКИ"
+end)
+
+-- ЗАПУСК
+task.wait(1)
+
+-- Автопоиск и хук кнопок
+HookAllButtons()
+HookTools()
+HookTouchShoot()
+
+-- Хук при респавне
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(2)
+    HookAllButtons()
+    HookTools()
+end)
+
+-- Обновление FOV
+RunService.RenderStepped:Connect(function()
+    if CircleFrame then
+        CircleFrame.Visible = Settings.Enabled and Settings.ShowFOV
+        CircleFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+    end
+end)
+
+print("=== SILENT AIM ЗАГРУЖЕН ===")
+print("1. FOV круг 80 по центру экрана")
+print("2. Нажми НАЙТИ КНОПКИ для поиска кнопок стрельбы")
+print("3. Нажми ТЕСТ ПОВОРОТА для проверки")
+print("===========================")
